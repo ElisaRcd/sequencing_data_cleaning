@@ -1,0 +1,111 @@
+# packages information
+import pandas as pd
+import re
+
+# functions
+
+# to extract strains ID
+def extract_strain_ID(text):
+    pattern = r'(\d+_[A-Za-z])' 
+    matches = re.findall(pattern, str(text)) 
+    return matches
+
+#opening the dataframe containing the OTUs (named df)
+df = pd.read_csv("Sequencing_data.csv",sep =",")
+
+# opening the dataframe containing GPS coordinates, dates etc.
+MSID = pd.read_csv("Master_soil_ID.csv")
+
+# opening the dataframe with information about the MiBIG clusters
+MiBIG_names = pd.read_csv("C:/Users/Cri User/Documents/DOC/Carte_science_a_la_pelle/Mibig_ids_v2.csv", sep=";")
+
+# opening the dataframe with information about the strains isolated
+strain_list = pd.read_csv("C:/Users/Cri User/Documents/DOC/Carte_science_a_la_pelle/strains_list - Sheet1.csv",sep =",")
+
+# getting untypically written samples (this string was written by F. Tesson)
+A=df.loc[df.well.str.contains('PARIS_')&(df.strains=='[]')]
+A['Strains']=A.well.map(lambda x: x.split('PARIS_')[1].split('-')[0])
+df.loc[df.well.str.contains('PARIS_')&(df.strains=='[]'),'strains']="['"+A.Strains+"']"
+
+# extraction of strains, suppression of duplicates and non-AD and KS amplicons
+print("initial size = ", len(df))
+df = df.drop_duplicates()
+print("size after duplicate suppression = ", len(df))
+selected_values = ['ketoacyl-synt', 'AMP-binding']
+df = df[df['Target_name'].isin(selected_values)]
+print("size after non AD and KS suppression = ", len(df))
+# Create a new column with the extracted values
+df['IDs'] = df['strains'].apply(lambda x: extract_strain_ID(x))
+# Explode the list in the ID column into separate rows
+df = df.explode('IDs')
+df[['Global ID', 'sample letter']] = df['IDs'].str.split('_', expand=True)
+print("final size = ", len(df))
+
+#merging by global ID to associate sample information with sequencing information
+MSID = MSID.rename(columns={' Global ID': 'Global ID'})
+df = df.rename(columns={'Global_ID': 'Global ID'})
+df = df[df['Global ID'].notna()]
+df['Global ID'] = df['Global ID'].astype('int')
+MSID['Global ID'] = MSID['Global ID'].astype('int')
+merged_table = pd.merge(df, MSID, on='Global ID')
+merged_table.head()
+
+# Merge the dataframes to add MiBIG information
+merged_table = merged_table.merge(MiBIG_names, left_on='MiBIG_ID', right_on='Accession', how='left')
+
+# Create a new column in merged_table with the compounds names
+merged_table['MiBIG_names'] = merged_table['Main product']
+
+# Drop the unnecessary columns from the merged_table
+merged_table.drop(['Accession', 'Main product','Cluster complete', 'Non-minimal', 'Status', 'Biosynthetic class', 'Organism'], axis=1, inplace=True)
+
+# grouping the information by sample
+strain_merged_table = pd.DataFrame()
+grouped_table = merged_table.groupby("Global ID")
+for group_id, group_data in grouped_table:
+    otu_count = len(group_data)
+    ad_count = len(group_data[group_data["Domain"] == "AD"])
+    ks_count = len(group_data[group_data["Domain"] == "KS"])
+    true_MiBIG_count = group_data["MiBIG"].sum()
+    names_list = group_data["MiBIG_names"].dropna().unique().tolist()
+    GCF_count = len(group_data["GCF"].dropna().unique())
+    nb_known = len(names_list)
+    
+    first_row = group_data.iloc[0]
+    first_row["OTU number"] = otu_count
+    first_row["number_AD"] = ad_count
+    first_row["number_KS"] = ks_count
+    first_row["nb_True_MiBIG"] = true_MiBIG_count
+    first_row["MiBIG_names"] = names_list
+    first_row["Nb_GCF"] = GCF_count
+    first_row["Nb_known"] = nb_known
+    first_row["Nb_unknown"] = int(first_row["Nb_GCF"]) - len(names_list)
+    
+    strain_merged_table = pd.concat([strain_merged_table, pd.DataFrame([first_row])], ignore_index=True)
+
+strain_merged_table = strain_merged_table.reset_index(drop=True)
+#keeping only relevant columns
+strain_merged_table = strain_merged_table.loc[:, ["latitude", "longitude", "Global ID", "OTU number", "number_AD", "number_KS","nb_True_MiBIG", "MiBIG_names","Nb_GCF","Nb_unknown","Nb_known"]]
+    
+strain_list[['Global ID', 'sample letter']] = strain_list['a'].str.split('_', expand=True)
+grouped_table = strain_list.groupby("Global ID")
+numbers = pd.DataFrame()
+
+# adding strain information
+for group_id, group_data in grouped_table:
+    strain_number = len(group_data)
+    first_row = group_data.iloc[0]
+    first_row["strain number"] = strain_number
+    numbers = pd.concat([numbers, pd.DataFrame([first_row])], ignore_index=True)
+
+numbers = numbers.loc[:, ["Global ID","strain number"]]
+strain_merged_table['Global ID'] = strain_merged_table['Global ID'].astype(int)
+numbers['Global ID'] = numbers['Global ID'].astype(int)
+
+strain_merged_table = strain_merged_table.merge(numbers, on='Global ID', how='left')
+
+# keeping only the relevant columns
+strain_merged_table_v1 = strain_merged_table.loc[:, ["latitude", "longitude", "Global ID", "MiBIG_names","Nb_known","Nb_unknown","strain number"]]
+
+
+
