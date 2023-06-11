@@ -1,6 +1,7 @@
 # packages information
 import pandas as pd
 import re
+import requests
 
 # functions
 
@@ -9,6 +10,36 @@ def extract_strain_ID(text):
     pattern = r'(\d+_[A-Za-z])' 
     matches = re.findall(pattern, str(text)) 
     return matches
+
+# to get a compound name
+def extract_compound_name(compound_name):
+    if "," in compound_name:
+        compound_name = compound_name.split(",")[0].strip()
+    return compound_name
+
+# to get a cid (compound identification) for pubchem
+def fetch_pubchem_cid(compound_names):
+    if isinstance(compound_names, list) and len(compound_names) > 0:
+        compound_name = extract_compound_name(compound_names[0])
+        search_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{compound_name}/cids/JSON"
+        response = requests.get(search_url)
+        data = response.json()
+        if 'IdentifierList' in data and 'CID' in data['IdentifierList']:
+            cid = data['IdentifierList']['CID'][0]
+            return cid
+    
+    return None
+
+# to get the url of the image from a molecule
+def fetch_pubchem_image_url(cid):
+    if cid:
+        search_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/PNG"
+        response = requests.get(search_url)
+        if response.status_code == 200:
+            return search_url
+    
+    return None
+
 
 #opening the dataframe containing the OTUs (named df)
 df = pd.read_csv("Sequencing_data.csv",sep =",")
@@ -107,5 +138,46 @@ strain_merged_table = strain_merged_table.merge(numbers, on='Global ID', how='le
 # keeping only the relevant columns
 strain_merged_table_v1 = strain_merged_table.loc[:, ["latitude", "longitude", "Global ID", "MiBIG_names","Nb_known","Nb_unknown","strain number"]]
 
+# Initialize an empty dictionary to store the search links
+search_links = {}
+
+# Initialize an empty list to store the compound names
+compound_names_list = []
+num_rows_with_data = 0
+
+for index, row in strain_merged_table_v1.iterrows():
+    compound_names = row['MiBIG_names']
+    if isinstance(compound_names, list) and len(compound_names) > 0:
+        num_rows_with_data += 1
+        compound_name = extract_compound_name(compound_names[0])
+        compound_names_list.append(compound_name)  # Add the compound name to the list
+        cid = fetch_pubchem_cid(compound_names)
+        if cid:
+            image_url = fetch_pubchem_image_url(cid)
+            if image_url:
+
+                # Add the search link to the dictionary
+                search_links[index] = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/PNG"
+    else:
+        # Add NaN for rows without compound names
+        compound_names_list.append(float('nan'))
+
+# Add the compound names as a new column in the dataframe
+strain_merged_table_v1['compound_name'] = compound_names_list
+
+# Add the downloaded image paths and search links to the dataframe
+strain_merged_table_v1['search_link'] = strain_merged_table_v1.index.map(lambda x: search_links.get(x))
+
+
+# Print the names of missing molecules
+missing_molecules = set()
+for index, row in strain_merged_table_v1.iterrows():
+    if row['search_link'] is None and isinstance(row['MiBIG_names'], list) and len(row['MiBIG_names']) > 0:
+        compound_name = extract_compound_name(row['MiBIG_names'][0])
+        missing_molecules.add(compound_name)
+
+print("Missing molecules:")
+for molecule_name in missing_molecules:
+    print(molecule_name)
 
 
